@@ -27,8 +27,8 @@ void lib_dump(const void *p, size_t size, const char *fmt, ...) {
 
     while(len) {
         if(((size - len) % 0x10) == 0)
-            printf("%s%02x ", 
-                   ((size - len) == 0) ? "" : "\n", 
+            printf("%s%02x ",
+                   ((size - len) == 0) ? "" : "\n",
                    (int)((size - len) & 0xff));
 
         for(int i = 0; i < 0x10; i++) {
@@ -46,7 +46,7 @@ void lib_dump(const void *p, size_t size, const char *fmt, ...) {
 
 void lib_hexdump(const void *p, size_t size, const char *fmt, ...) {
     char *hbuf, *cbuf;
-    size_t tlen, hlen, clen;
+    size_t hlen, tlen;
     va_list ap;
     int i;
 
@@ -63,7 +63,7 @@ void lib_hexdump(const void *p, size_t size, const char *fmt, ...) {
     }
     printf("\n");
 
-    tlen = hlen = clen = size;
+    hlen = tlen = size;
     hbuf = cbuf = (char *)p;
 
     while(tlen) {
@@ -86,15 +86,14 @@ void lib_hexdump(const void *p, size_t size, const char *fmt, ...) {
         printf("  ");
         for(int i = 0; i < 0x10; i++) {
             char val = *cbuf;
-            if(((size - clen) % 0x8) == 0)
+            if(((size - tlen) % 0x8) == 0)
                 printf(" ");
 
-            if(clen > 0) {
+            if(tlen > 0) {
                 if(val > 0x20 && val < 0x7e)
                     printf("%c", val);
                 else
                     printf(".");
-                clen--;
                 tlen--;
                 cbuf++;
             }
