@@ -257,17 +257,16 @@ static int grbl_inject(struct grbl_bridge_s *grbl) {
             pthread_mutex_unlock(&grbl->lock);
         }
         break;
-    case 'b':
-    default:
-        printf("falling back to main menu\n");
-        break;
+    case 'b': printf("falling back to main menu\n"); break;
+    default: printf("unknown key, falling back to main menu\n"); break;
     }
 
     return 0;
 }
 
 static int print_help(const char *name, int ret) {
-    printf("usage: %s [-hv] <serial-port>\n",
+    printf("usage: %s [-hv] [-p port] <serial-port>\n"
+           "default port: telnet (23)\n",
            name);
     return ret;
 }
@@ -275,18 +274,20 @@ static int print_help(const char *name, int ret) {
 int main(int argc, char **argv) {
     pthread_t r2l_thread, l2r_thread;
     struct grbl_bridge_s grbl;
+    uint16_t port = SERVERPORT;
     int ret;
 
     memset(&grbl, 0, sizeof(struct grbl_bridge_s));
 
     for(;;) {
-        int c = getopt(argc, argv, "hv");
+        int c = getopt(argc, argv, "hvp:");
 
         if(c == -1)
             break;
 
         switch(c) {
         case 'v': grbl.verbose = 1; break;
+        case 'p': port = (uint16_t)strtol(optarg, NULL, 0);
         case 'h': return print_help(argv[0], 0);
         default: break;
         }
@@ -307,7 +308,7 @@ int main(int argc, char **argv) {
         goto err;
     }
 
-    if(tcp_open(&grbl.srv, SERVERPORT)) {
+    if(tcp_open(&grbl.srv, port)) {
         LIB_LOG_ERR("failed to open tcp socket");
         goto err_mutex_destroy;
     }
