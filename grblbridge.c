@@ -11,22 +11,15 @@
 #include <lib_tty.h>
 #include <lib_log.h>
 
-#if 0
-serv.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
-serv.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
-serv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32768)
-#endif
-
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a) (sizeof(a) / (sizeof(a[0])))
 #endif
 
 #define BUFFER_SIZE 0x1000
 
-    //#define SERVERPORT (5005) // ruida port
 #define SERVERPORT (23) // grbl port (telnet)
 
-    struct grbl_bridge_s {
+struct grbl_bridge_s {
     /** generic */
     int verbose;
     pthread_mutex_t lock;
@@ -247,7 +240,7 @@ static int grbl_inject(struct grbl_bridge_s *grbl) {
     switch(c) {
     case 'r':
     case 'l':
-        printf("Enter your code: ");
+        printf("Enter your code and confirm with [enter]: ");
         stdin_echo(1);
         fgets(buf, sizeof(buf), stdin);
         stdin_echo(0);
