@@ -26,7 +26,6 @@
 #include <ctype.h>
 
 #include <lib_log.h>
-//#include <lib_buffer.h>
 
 static int tcp_set_blocking(int sd, int enable) {
     int flags;
@@ -122,14 +121,14 @@ int tcp_accept(struct tcp_sock_s *srv, struct tcp_sock_s *cli) {
         if(!inet_ntop(AF_INET, &ip4->sin_addr, ipstr, sizeof(ipstr)))
             LIB_LOG_ERR("inet_ntop failed");
 
-        LIB_LOG_DBG("ip4 %s:%d", ipstr, ntohs(ip4->sin_port));
+        LIB_LOG_INFO("ip4 %s:%d", ipstr, ntohs(ip4->sin_port));
         break;
     case AF_INET6:
         cli->port = ntohs(ip6.sin6_port);
         if(!inet_ntop(AF_INET6, &ip6.sin6_addr, ipstr, sizeof(ipstr)))
             LIB_LOG_ERR("inet_ntop failed");
 
-        LIB_LOG_DBG("ip6 %s:%d (%d, %d)",
+        LIB_LOG_INFO("ip6 %s:%d (%d, %d)",
                     ipstr, ntohs(ip6.sin6_port),
                     ip6.sin6_flowinfo,
                     ip6.sin6_scope_id);
