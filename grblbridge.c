@@ -71,7 +71,7 @@ static int grbl_open_tty(const char *ttyif) {
 
     fd = open(ttyif, O_RDWR);
     if(fd < 0) {
-        LIB_LOG_ERR("failed to open serial port");
+        //LIB_LOG_ERR("failed to open serial port");
         return -1;
     }
 
@@ -132,11 +132,11 @@ static void *r2l(void *arg) {
 
         pthread_mutex_lock(&grbl->lock);
         ret = tcp_accept(&grbl->srv, &grbl->cli);
+        pthread_mutex_unlock(&grbl->lock);
         if(ret < 0) {
             run = 0;
             continue;
         }
-        pthread_mutex_unlock(&grbl->lock);
 
         while(run) {
             ret = tcp_select(&grbl->cli, 1000);
@@ -177,7 +177,9 @@ static void *l2r(void *arg) {
     char buf[BUFFER_SIZE];
     int ret;
 
-    grbl->ttyfd = grbl_open_tty(grbl->ttyif);
+    pthread_mutex_lock(&grbl->lock);
+    grbl->ttyfd = -1;
+    pthread_mutex_unlock(&grbl->lock);
 
     if(grbl == NULL)
         run = 0;
