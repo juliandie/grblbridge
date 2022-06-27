@@ -119,7 +119,7 @@ static void *r2l(void *arg) {
     if(grbl == NULL)
         run = 0;
 
-    LIB_LOG_INFO("Listening to... 0.0.0.0:%u", SERVERPORT);
+    LIB_LOG_INFO("Listening to... 0.0.0.0:%u", grbl->srv.port);
     while(run) {
         ret = tcp_select(&grbl->srv, 1000);
         if(ret < 0) {
