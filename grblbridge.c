@@ -86,7 +86,7 @@ static int grbl_pollin(int sd, int timeout) {
     return poll(&fds, 1, timeout);
 }
 
-static void *r2l_handle(void *arg) {
+static void *grbl_r2l_handle(void *arg) {
     struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
     struct sockaddr_in peer;
     socklen_t addrlen;
@@ -218,7 +218,7 @@ static int grbl_prepare_tty(struct grbl_bridge *grbl) {
     return 0;
 }
 
-static void *l2r_handle(void *arg) {
+static void *grbl_l2r_handle(void *arg) {
     struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
     char buf[MTU_SIZE];
     int ret;
@@ -377,12 +377,12 @@ static int grbl_prepare_thread(struct grbl_bridge *grbl) {
         fprintf(stderr, "failed to init mutex\n");
         return -1;
     }
-    if(pthread_create(&grbl->r2l, NULL, &r2l_handle, (void *)grbl) < 0) {
+    if(pthread_create(&grbl->r2l, NULL, &grbl_r2l_handle, (void *)grbl) < 0) {
         fprintf(stderr, "failed to create thread r2l\n");
         return -1;
     }
 
-    if(pthread_create(&grbl->l2r, NULL, &l2r_handle, (void *)grbl) < 0) {
+    if(pthread_create(&grbl->l2r, NULL, &grbl_l2r_handle, (void *)grbl) < 0) {
         fprintf(stderr, "failed to create thread l2r\n");
         return -1;
     }
