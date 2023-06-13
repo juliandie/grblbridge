@@ -33,10 +33,6 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(a) (sizeof(a) / (sizeof(a[0])))
-#endif
-
 #define MTU_SIZE (1500u)
 
 #define GRBL_PORT "23" // default grbl port (telnet)
@@ -410,16 +406,13 @@ int main(int argc, char **argv) {
         default: break;
         }
     }
-#if 0
+
     if(optind >= argc) {
         print_help(argv[0]);
         return -1;
     }
 
     grbl.ttyif = strdup(argv[optind]);
-#else
-    grbl.ttyif = "/dev/ttyS0";
-#endif
     /**
      * We don't prepare tty yet, since the laser might be off at the moment.
      * The tty is opened and maintained in the l2r thread.
