@@ -6,77 +6,179 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
-
-#include <tcp_sock.h>
-#include <lib_tty.h>
-#include <lib_log.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <netdb.h>
+#include <net/ethernet.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
+#include <netpacket/packet.h>
+#include <linux/types.h>
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <termios.h>
+#include <stdlib.h>
+#include <errno.h>
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a) (sizeof(a) / (sizeof(a[0])))
 #endif
 
-#define BUFFER_SIZE 0x1000
+#define MTU_SIZE (1500u)
 
-#define SERVERPORT (23) // grbl port (telnet)
+#define GRBL_PORT "23" // default grbl port (telnet)
 
-struct grbl_bridge_s {
+struct grbl_bridge {
     /** generic */
     int verbose;
     pthread_mutex_t lock;
+    pthread_t l2r; /**< laser to remote */
+    pthread_t r2l; /**< remote to laser */
 
     /** serial */
     int ttyfd;
     char *ttyif;
 
     /** network */
-    struct tcp_sock_s srv;
-    struct tcp_sock_s cli;
+    char *port;
+    int srv; /**< server sock descriptor */
+    int cli; /**< remote sock descriptor */
+    int mon; /**< monitoring sock descriptor */
 
 };
-
-static int run = 1;
 
 static void stdin_echo(int enable) {
     struct termios tty;
     tcgetattr(STDIN_FILENO, &tty);
-    if(enable)
+    if(enable) {
         tty.c_lflag |= (ICANON | ECHO);
-    else
+    }
+    else {
         tty.c_lflag &= ~(ICANON | ECHO);
+    }
     tcsetattr(STDIN_FILENO, TCSANOW, &tty);
 }
 
-static void sig_reset(int signum) {
-    signal(signum, SIG_DFL);
-}
-
-static int sig_register(int signum, void (*handler)(int)) {
-    struct sigaction act = {
-        .sa_flags = SA_RESTART,
-        .sa_handler = handler,
+static int grbl_pollin(int sd, int timeout) {
+    struct pollfd fds = {
+        .fd = sd,
+        .events = POLLIN,
     };
-    sigemptyset(&act.sa_mask);
 
-    return sigaction(signum, &act, NULL);
+    return poll(&fds, 1, timeout);
 }
 
-static void sig_handler(int signum) {
-    run = 0;
-    sig_reset(signum);
+static void *r2l_handle(void *arg) {
+    struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
+    struct sockaddr_in peer;
+    socklen_t addrlen;
+    char buf[MTU_SIZE];
+    int ret;
+
+    if(grbl == NULL) {
+        pthread_exit(NULL);
+    }
+
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+    
+    ret = listen(grbl->srv, 1); // accept only 1 conection at once
+    if(ret < 0) {
+        fprintf(stderr, "listen: %s\n", strerror(errno));
+            pthread_exit(NULL);
+    }
+    printf("Listening to... 0.0.0.0:%s\n", grbl->port);
+    for(;;) {
+        /**
+         * in case someone called pthread_cancel() for this thread
+         * pthread_testcancel() won't return.
+         */
+        pthread_testcancel();
+
+        ret = grbl_pollin(grbl->srv, 1000);
+        if(ret < 0) {
+            fprintf(stderr, "poll: %s\n", strerror(errno));
+            pthread_exit(NULL);
+        }
+
+        if(ret == 0)
+            continue;
+
+        addrlen = sizeof(struct sockaddr);
+        pthread_mutex_lock(&grbl->lock);
+        grbl->cli = accept(grbl->srv, (struct sockaddr *)&peer, &addrlen);
+        pthread_mutex_unlock(&grbl->lock);
+        if(grbl->cli < 0) {
+            fprintf(stderr, "accept: %s\n", strerror(errno));
+            pthread_exit(NULL);
+        }
+
+        for(;;) {
+            /**
+             * in case someone called pthread_cancel() for this thread
+             * pthread_testcancel() won't return.
+             */
+            pthread_testcancel();
+
+            ret = grbl_pollin(grbl->cli, 1);
+            if(ret < 0) // err (maybe closed/detached)
+                goto close;
+
+            if(ret == 0) // timeout, no data
+                continue;
+
+            ret = read(grbl->cli, buf, sizeof(buf));
+            if(ret < 0)
+                goto close;
+
+            if(ret == 0)
+                goto close;
+
+            if(grbl->verbose) {
+                pthread_mutex_lock(&grbl->lock);
+                printf("[R2L(%d)] %s", ret, buf);
+                pthread_mutex_unlock(&grbl->lock);
+            }
+
+            pthread_mutex_lock(&grbl->lock);
+            write(grbl->ttyfd, buf, ret);
+            pthread_mutex_unlock(&grbl->lock);
+        }
+close:
+        pthread_mutex_lock(&grbl->lock);
+        close(grbl->cli);
+        grbl->cli = -1;
+        pthread_mutex_unlock(&grbl->lock);
+    }
+    
+    fprintf(stderr, "finish r2l\n");
+    pthread_exit(NULL);
 }
 
-static int grbl_open_tty(const char *ttyif) {
+static int grbl_prepare_tty(struct grbl_bridge *grbl) {
     struct termios tty;
-    int fd;
 
-    fd = open(ttyif, O_RDWR);
-    if(fd < 0) {
-        //LIB_LOG_ERR("failed to open serial port");
+    grbl->ttyfd = open(grbl->ttyif, O_RDWR);
+    if(grbl->ttyfd < 0) {
+        fprintf(stderr, "failed to open terminal\n");
         return -1;
     }
 
-    if(tcgetattr(fd, &tty) < 0) {
-        LIB_LOG_ERR("failed to get terminal attributes");
+    if(tcgetattr(grbl->ttyfd, &tty) < 0) {
+        fprintf(stderr, "failed to get terminal attributes\n");
         return -1;
     }
 
@@ -103,121 +205,78 @@ static int grbl_open_tty(const char *ttyif) {
     // Set in/out baud rate to be 115200
     cfsetspeed(&tty, B115200);
 
-    if(tcsetattr(fd, TCSANOW, &tty) < 0) {
-        LIB_LOG_ERR("failed to set terminal attributes");
+    if(tcsetattr(grbl->ttyfd, TCSANOW, &tty) < 0) {
+        fprintf(stderr, "failed to set terminal attributes\n");
         return -1;
     }
 
-    return fd;
+    return 0;
 }
 
-static void *r2l(void *arg) {
-    struct grbl_bridge_s *grbl = (struct grbl_bridge_s *)arg;
-    char buf[BUFFER_SIZE];
-    int ret;
-
-    if(grbl == NULL)
-        run = 0;
-
-    LIB_LOG_INFO("Listening to... 0.0.0.0:%u", grbl->srv.port);
-    while(run) {
-        ret = tcp_select(&grbl->srv, 1000);
-        if(ret < 0) {
-            run = 0;
-            continue;
-        }
-
-        if(ret == 0)
-            continue;
-
-        pthread_mutex_lock(&grbl->lock);
-        ret = tcp_accept(&grbl->srv, &grbl->cli);
-        pthread_mutex_unlock(&grbl->lock);
-        if(ret < 0) {
-            run = 0;
-            continue;
-        }
-
-        while(run) {
-            ret = tcp_select(&grbl->cli, 1000);
-            if(ret < 0)
-                goto close;
-
-            if(ret == 0)
-                continue;
-
-            ret = tcp_recv(&grbl->cli, buf, sizeof(buf));
-            if(ret < 0)
-                goto close;
-
-            if(ret == 0)
-                goto close;
-
-            if(grbl->verbose) {
-                pthread_mutex_lock(&grbl->lock);
-                lib_hexdump(buf, ret, "R2L");
-                pthread_mutex_unlock(&grbl->lock);
-            }
-
-            pthread_mutex_lock(&grbl->lock);
-            tty_write(grbl->ttyfd, buf, ret);
-            pthread_mutex_unlock(&grbl->lock);
-        }
-close:
-        pthread_mutex_lock(&grbl->lock);
-        tcp_close(&grbl->cli);
-        pthread_mutex_unlock(&grbl->lock);
-    }
-
-    pthread_exit(NULL);
-}
-
-static void *l2r(void *arg) {
-    struct grbl_bridge_s *grbl = (struct grbl_bridge_s *)arg;
-    char buf[BUFFER_SIZE];
+static void *l2r_handle(void *arg) {
+    struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
+    char buf[MTU_SIZE];
     int ret;
 
     pthread_mutex_lock(&grbl->lock);
     grbl->ttyfd = -1;
     pthread_mutex_unlock(&grbl->lock);
 
-    if(grbl == NULL)
-        run = 0;
+    if(grbl == NULL) {
+        pthread_exit(NULL);
+    }
 
-    while(run) {
-        // wait for laser/serial connection
-        // laser might in standby or disconnected
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+    for(;;) {
+        /**
+         * in case someone called pthread_cancel() for this thread
+         * pthread_testcancel() won't return.
+         */
+        pthread_testcancel();
+
+        /**
+         * wait for laser/serial connection
+         * laser might in standby or disconnected
+         */
         if(grbl->ttyfd < 0) {
             pthread_mutex_lock(&grbl->lock);
-            grbl->ttyfd = grbl_open_tty(grbl->ttyif);
+            ret = grbl_prepare_tty(grbl);
             pthread_mutex_unlock(&grbl->lock);
-            if(grbl->ttyfd < 0) {
+            if(ret < 0) {
                 sleep(1);
                 continue;
             }
         }
 
-        while(run) {
-            ret = tty_select(grbl->ttyfd, 1000);
+        for(;;) {
+            /**
+             * in case someone called pthread_cancel() for this thread
+             * pthread_testcancel() won't return.
+             */
+            pthread_testcancel();
+
+            ret = grbl_pollin(grbl->ttyfd, 1);
             if(ret < 0)
                 goto close;
 
             if(ret == 0)
                 continue;
 
-            ret = tty_read(grbl->ttyfd, buf, sizeof(buf));
+            ret = read(grbl->ttyfd, buf, sizeof(buf));
             if(ret < 0)
                 goto close;
 
             if(grbl->verbose) {
                 pthread_mutex_lock(&grbl->lock);
-                lib_hexdump(buf, ret, "L2R");
+                printf("[L2R(%d)] %s", ret, buf);
                 pthread_mutex_unlock(&grbl->lock);
             }
 
             if(!strncmp(&buf[ret - 2], "\r\n", 2)) {
                 pthread_mutex_lock(&grbl->lock);
-                tcp_send(&grbl->cli, buf, ret);
+                write(grbl->cli, buf, ret);
                 pthread_mutex_unlock(&grbl->lock);
             }
         }
@@ -227,17 +286,18 @@ close:
         grbl->ttyfd = -1;
         pthread_mutex_unlock(&grbl->lock);
     }
-
+    
+    fprintf(stderr, "finish l2r\n");
     pthread_exit(NULL);
 }
 
-static int grbl_inject(struct grbl_bridge_s *grbl) {
-    char buf[32];
-    int c;
+static int grbl_inject(struct grbl_bridge *grbl) {
+    char buf[32], c;
+    int ret = 0;
 
     memset(buf, 0, sizeof(buf));
     printf("Inject to [r]emote, [l]aser or got [b]ack\n");
-    c = getchar();
+    c = (char)getchar();
 
     switch(c) {
     case 'r':
@@ -247,15 +307,14 @@ static int grbl_inject(struct grbl_bridge_s *grbl) {
         fgets(buf, sizeof(buf), stdin);
         stdin_echo(0);
         if(c == 'r') {
-            lib_hexdump(buf, sizeof(buf), "u2R");
             pthread_mutex_lock(&grbl->lock);
-            tcp_send(&grbl->cli, buf, strlen(buf));
+            ret = write(grbl->cli, buf, strlen(buf));
             pthread_mutex_unlock(&grbl->lock);
         }
         else {
-            lib_hexdump(buf, sizeof(buf), "u2L");
             pthread_mutex_lock(&grbl->lock);
-            tty_write(grbl->ttyfd, buf, strlen(buf));
+            /** write to ttyfd might fail, since there might be no laser */
+            ret = write(grbl->ttyfd, buf, strlen(buf));
             pthread_mutex_unlock(&grbl->lock);
         }
         break;
@@ -263,23 +322,75 @@ static int grbl_inject(struct grbl_bridge_s *grbl) {
     default: printf("unknown key, falling back to main menu\n"); break;
     }
 
-    return 0;
-}
-
-static int print_help(const char *name, int ret) {
-    printf("usage: %s [-hv] [-p port] <serial-port>\n"
-           "default port: telnet (23)\n",
-           name);
     return ret;
 }
 
-int main(int argc, char **argv) {
-    pthread_t r2l_thread, l2r_thread;
-    struct grbl_bridge_s grbl;
-    uint16_t port = SERVERPORT;
-    int ret;
+static void print_help(const char *name) {
+    printf("usage: %s [-hv] [-p port] <serial-port>\n"
+           "default port: telnet (23)\n",
+           name);
+    return;
+}
 
-    memset(&grbl, 0, sizeof(struct grbl_bridge_s));
+static int grbl_prepare_tcp(struct grbl_bridge *grbl) {
+    struct addrinfo hints = {
+        .ai_family = AF_INET,
+        .ai_socktype = SOCK_STREAM,
+        .ai_flags = AI_PASSIVE,
+        .ai_protocol = 0,
+    };
+    struct addrinfo *res, *rp;
+    int ret = 0, fd = 0;
+
+    ret = getaddrinfo(NULL, (!grbl->port) ? GRBL_PORT : grbl->port,
+                      &hints, &res);
+    if(ret != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
+        return -1;
+    }
+
+    for(rp = res; rp != NULL; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if(fd == -1)
+            continue;
+
+        if(bind(fd, rp->ai_addr, rp->ai_addrlen) == 0)
+            break; /* Success */
+
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(res);
+    grbl->srv = fd;
+
+    return 0;
+}
+
+static int grbl_prepare_thread(struct grbl_bridge *grbl) {
+    if(pthread_mutex_init(&grbl->lock, NULL) < 0) {
+        fprintf(stderr, "failed to init mutex\n");
+        return -1;
+    }
+    if(pthread_create(&grbl->r2l, NULL, &r2l_handle, (void *)grbl) < 0) {
+        fprintf(stderr, "failed to create thread r2l\n");
+        return -1;
+    }
+
+    if(pthread_create(&grbl->l2r, NULL, &l2r_handle, (void *)grbl) < 0) {
+        fprintf(stderr, "failed to create thread l2r\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    struct grbl_bridge grbl;
+    int ret = 0;
+
+    memset(&grbl, 0, sizeof(struct grbl_bridge));
+    grbl.ttyfd = -1;
 
     for(;;) {
         int c = getopt(argc, argv, "hvp:");
@@ -289,64 +400,68 @@ int main(int argc, char **argv) {
 
         switch(c) {
         case 'v': grbl.verbose = 1; break;
-        case 'p': port = (uint16_t)strtol(optarg, NULL, 0);
-        case 'h': return print_help(argv[0], 0);
+        case 'p': grbl.port = optarg; break;
+        case 'h':  print_help(argv[0]); return -1;
         default: break;
         }
     }
-
-    if(optind >= argc)
-        return print_help(argv[0], -1);
+#if 0
+    if(optind >= argc) {
+        print_help(argv[0]);
+        return -1;
+    }
 
     grbl.ttyif = strdup(argv[optind]);
+#else
+    grbl.ttyif = "/dev/ttyS0";
+#endif
+    /**
+     * We don't prepare tty yet, since the laser might be off at the moment.
+     * The tty is opened and maintained in the l2r thread.
+     */
 
-    if(sig_register(SIGTERM, &sig_handler) != 0) {
-        LIB_LOG_ERR("failed to register SIGTERM handler");
-    }
-
-    ret = pthread_mutex_init(&grbl.lock, NULL);
+    ret = grbl_prepare_tcp(&grbl);
     if(ret < 0) {
-        LIB_LOG_ERR("failed to init mutex");
-        goto err;
+        goto err_free;
     }
 
-    if(tcp_open(&grbl.srv, port)) {
-        LIB_LOG_ERR("failed to open tcp socket");
-        goto err_mutex_destroy;
+    ret = grbl_prepare_thread(&grbl);
+    if(ret < 0) {
+        goto err_unprepare_tcp;
     }
 
-    if(pthread_create(&r2l_thread, NULL, &r2l, (void *)&grbl) < 0)
-        goto err_close;
-
-    if(pthread_create(&l2r_thread, NULL, &l2r, (void *)&grbl) < 0)
-        goto err_join;
-
-    // Disable tty buffer and echo
+    /**
+     * Disable stdin echo
+     * echo shall be disabled, to support such a text-menu
+     */
     stdin_echo(0);
 
-    while(run) {
+    for(;;) {
         int c = getchar();
+
         switch(c) {
         case 'i': grbl_inject(&grbl); break;
         case 'v': grbl.verbose = 1 - grbl.verbose; break;
-        case 'x': run = 0; break;
+        case 'x': goto done;
         }
+
         usleep(1000);
     }
 
-    // Enable tty buffer and echo
+done:
+    /** Enable stdin buffer and echo */
     stdin_echo(1);
 
-    pthread_join(l2r_thread, NULL);
-err_join:
-    if(run)
-        run = 0;
-    pthread_join(r2l_thread, NULL);
-err_close:
-    tcp_close(&grbl.srv);
-err_mutex_destroy:
+    pthread_cancel(grbl.l2r);
+    pthread_join(grbl.l2r, NULL);
+    pthread_cancel(grbl.r2l);
+    pthread_join(grbl.r2l, NULL);
     pthread_mutex_destroy(&grbl.lock);
-err:
+    if(grbl.ttyfd != -1)
+        close(grbl.ttyfd);
+err_unprepare_tcp:
+    close(grbl.srv);
+err_free:
     free(grbl.ttyif);
     return ret;
 }
