@@ -84,11 +84,50 @@ static int grbl_pollin(int sd, int timeout) {
     return poll(&fds, 1, timeout);
 }
 
+static void grbl_r2l_forward(struct grbl_bridge *grbl) {
+    char buf[MTU_SIZE];
+    int ret;
+
+    for(;;) {
+        pthread_testcancel();
+
+        ret = grbl_pollin(grbl->cli, 100);
+        if(ret < 0) // err (maybe closed/detached)
+            return;
+
+        if(ret == 0) // timeout, no data
+            continue;
+
+        ret = read(grbl->cli, buf, sizeof(buf));
+        if(ret < 0) // err
+            return;
+
+        if(ret == 0) // closed by remote
+            return;
+
+        if(grbl->verbose) {
+            pthread_mutex_lock(&grbl->lock);
+            printf("R2L{%.4dB} %s\n", ret, buf);
+            pthread_mutex_unlock(&grbl->lock);
+        }
+
+        if(grbl->ttyfd == -1)
+            continue; // discard message
+
+        pthread_mutex_lock(&grbl->lock);
+        ret = write(grbl->ttyfd, buf, ret);
+        if(ret < 0) {
+            fprintf(stderr, "write (tty): %s\n", strerror(errno));
+        }
+        pthread_mutex_unlock(&grbl->lock);
+    }
+    return;
+}
+
 static void *grbl_r2l_handle(void *arg) {
     struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
     struct sockaddr_in peer;
     socklen_t addrlen;
-    char buf[MTU_SIZE];
     int ret;
 
     if(grbl == NULL) {
@@ -97,12 +136,13 @@ static void *grbl_r2l_handle(void *arg) {
 
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
-    
+
     ret = listen(grbl->srv, 1); // accept only 1 conection at once
     if(ret < 0) {
         fprintf(stderr, "listen: %s\n", strerror(errno));
-            pthread_exit(NULL);
+        pthread_exit(NULL);
     }
+
     printf("Listening to... 0.0.0.0:%s\n", grbl->port);
     for(;;) {
         pthread_testcancel();
@@ -116,49 +156,24 @@ static void *grbl_r2l_handle(void *arg) {
         if(ret == 0)
             continue;
 
-        addrlen = sizeof(struct sockaddr);
         pthread_mutex_lock(&grbl->lock);
+        addrlen = sizeof(struct sockaddr);
         grbl->cli = accept(grbl->srv, (struct sockaddr *)&peer, &addrlen);
         pthread_mutex_unlock(&grbl->lock);
+
         if(grbl->cli < 0) {
             fprintf(stderr, "accept: %s\n", strerror(errno));
             pthread_exit(NULL);
         }
 
-        for(;;) {
-            pthread_testcancel();
+        grbl_r2l_forward(grbl);
 
-            ret = grbl_pollin(grbl->cli, 1);
-            if(ret < 0) // err (maybe closed/detached)
-                goto close;
-
-            if(ret == 0) // timeout, no data
-                continue;
-
-            ret = read(grbl->cli, buf, sizeof(buf));
-            if(ret < 0)
-                goto close;
-
-            if(ret == 0)
-                goto close;
-
-            if(grbl->verbose) {
-                pthread_mutex_lock(&grbl->lock);
-                printf("[R2L(%dB)] %s", ret, buf);
-                pthread_mutex_unlock(&grbl->lock);
-            }
-
-            pthread_mutex_lock(&grbl->lock);
-            write(grbl->ttyfd, buf, ret);
-            pthread_mutex_unlock(&grbl->lock);
-        }
-close:
         pthread_mutex_lock(&grbl->lock);
         close(grbl->cli);
         grbl->cli = -1;
         pthread_mutex_unlock(&grbl->lock);
     }
-    
+
     fprintf(stderr, "finish r2l\n");
     pthread_exit(NULL);
 }
@@ -208,9 +223,48 @@ static int grbl_prepare_tty(struct grbl_bridge *grbl) {
     return 0;
 }
 
+static void grbl_l2r_foward(struct grbl_bridge *grbl) {
+    char buf[MTU_SIZE];
+    int ret;
+
+    for(;;) {
+        pthread_testcancel();
+
+        ret = grbl_pollin(grbl->ttyfd, 100);
+        if(ret < 0)
+            return;
+
+        if(ret == 0)
+            continue;
+
+        ret = read(grbl->ttyfd, buf, sizeof(buf));
+        if(ret < 0)
+            return;
+
+        if(ret == 0) // something went very wrong
+            return;
+
+        if(grbl->verbose) {
+            pthread_mutex_lock(&grbl->lock);
+            printf("L2R{%.4dB} %s\n", ret, buf);
+            pthread_mutex_unlock(&grbl->lock);
+        }
+
+        if(strncmp(&buf[ret - 2], "\r\n", 2)) // message not complete
+            continue;
+
+        pthread_mutex_lock(&grbl->lock);
+        ret = write(grbl->cli, buf, ret);
+        if(ret < 0) {
+            fprintf(stderr, "write (tcp): %s", strerror(errno));
+        }
+        pthread_mutex_unlock(&grbl->lock);
+    }
+    return;
+}
+
 static void *grbl_l2r_handle(void *arg) {
     struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
-    char buf[MTU_SIZE];
     int ret;
 
     pthread_mutex_lock(&grbl->lock);
@@ -241,39 +295,14 @@ static void *grbl_l2r_handle(void *arg) {
             }
         }
 
-        for(;;) {
-            pthread_testcancel();
+        grbl_l2r_foward(grbl);
 
-            ret = grbl_pollin(grbl->ttyfd, 1);
-            if(ret < 0)
-                goto close;
-
-            if(ret == 0)
-                continue;
-
-            ret = read(grbl->ttyfd, buf, sizeof(buf));
-            if(ret < 0)
-                goto close;
-
-            if(grbl->verbose) {
-                pthread_mutex_lock(&grbl->lock);
-                printf("[L2R(%d)] %s", ret, buf);
-                pthread_mutex_unlock(&grbl->lock);
-            }
-
-            if(!strncmp(&buf[ret - 2], "\r\n", 2)) {
-                pthread_mutex_lock(&grbl->lock);
-                write(grbl->cli, buf, ret);
-                pthread_mutex_unlock(&grbl->lock);
-            }
-        }
-close:
         pthread_mutex_lock(&grbl->lock);
         close(grbl->ttyfd);
         grbl->ttyfd = -1;
         pthread_mutex_unlock(&grbl->lock);
     }
-    
+
     fprintf(stderr, "finish l2r\n");
     pthread_exit(NULL);
 }
@@ -296,12 +325,16 @@ static int grbl_inject(struct grbl_bridge *grbl) {
         if(c == 'r') {
             pthread_mutex_lock(&grbl->lock);
             ret = write(grbl->cli, buf, strlen(buf));
+            if(ret < 0)
+                fprintf(stderr, "write (tcp): %s", strerror(errno));
             pthread_mutex_unlock(&grbl->lock);
         }
         else {
             pthread_mutex_lock(&grbl->lock);
             /** write to ttyfd might fail, since there might be no laser */
             ret = write(grbl->ttyfd, buf, strlen(buf));
+            if(ret < 0)
+                fprintf(stderr, "write (tty): %s", strerror(errno));
             pthread_mutex_unlock(&grbl->lock);
         }
         break;
@@ -359,6 +392,7 @@ static int grbl_prepare_thread(struct grbl_bridge *grbl) {
         fprintf(stderr, "failed to init mutex\n");
         return -1;
     }
+
     if(pthread_create(&grbl->r2l, NULL, &grbl_r2l_handle, (void *)grbl) < 0) {
         fprintf(stderr, "failed to create thread r2l\n");
         return -1;
@@ -378,6 +412,7 @@ int main(int argc, char **argv) {
 
     memset(&grbl, 0, sizeof(struct grbl_bridge));
     grbl.ttyfd = -1;
+    grbl.cli = -1;
 
     for(;;) {
         int c = getopt(argc, argv, "hvp:");
@@ -419,15 +454,22 @@ int main(int argc, char **argv) {
         int c = getchar();
 
         switch(c) {
-        case 'i': grbl_inject(&grbl); break;
-        case 'v': grbl.verbose = 1 - grbl.verbose; break;
-        case 'x': goto done;
+        case 'i':
+            grbl_inject(&grbl);
+            break;
+        case 'v':
+            grbl.verbose = 1 - grbl.verbose;
+            printf("verbose %s\n", (grbl.verbose) ? "enabled" : "disabled");
+            break;
+        case 'x':
+            goto done;
         }
 
         usleep(1000);
     }
 
 done:
+    printf("exit...\n");
     /** Enable stdin buffer and echo */
     stdin_echo(1);
 
@@ -436,10 +478,14 @@ done:
     pthread_cancel(grbl.r2l);
     pthread_join(grbl.r2l, NULL);
     pthread_mutex_destroy(&grbl.lock);
-    if(grbl.ttyfd != -1)
+    if(grbl.ttyfd != -1) {
         close(grbl.ttyfd);
+    }
 err_unprepare_tcp:
     close(grbl.srv);
+    if(grbl.cli != -1) {
+        close(grbl.cli);
+    }
 err_free:
     free(grbl.ttyif);
     return ret;
