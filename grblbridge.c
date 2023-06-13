@@ -37,6 +37,7 @@
 
 #define GRBL_PORT "23" // default grbl port (telnet)
 
+/** make any variable volatile that is access by different threads */
 struct grbl_bridge {
     /** generic */
     int verbose;
@@ -45,13 +46,13 @@ struct grbl_bridge {
     pthread_t r2l; /**< remote to laser */
 
     /** serial */
-    int ttyfd;
+    volatile int ttyfd;
     char *ttyif;
 
     /** network */
     char *port;
     int srv; /**< server sock descriptor */
-    int cli; /**< remote sock descriptor */
+    volatile int cli; /**< remote sock descriptor */
 
     /** monitor */
     int mon; /**< monitoring sock descriptor */
