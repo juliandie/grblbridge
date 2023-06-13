@@ -1,5 +1,6 @@
-# GRBL bridge
-Use this software on your RapberryPi or Notebook, which is conencted to your laser and your network via LAN or WIFI. Personally I use Lightburn to connect to the brdige via GRBL (LAN).
+# GRBL headless bridge
+Use this software on your RapberryPi or Notebook, which is conencted to your laser and your network via LAN or WIFI
+Personally I use Lightburn to connect to the brdige via GRBL (LAN).
 
 Basically this is just a bridge from a TCP-Socket to UART.
 
