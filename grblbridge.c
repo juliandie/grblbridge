@@ -60,6 +60,11 @@ struct grbl_bridge {
 
 };
 
+/**
+ * Disable stdin echo and icanon
+ * echo shall be disabled, to avoid cluttering
+ * icanon is disabled, to detect single key-strokes
+ */
 static void stdin_echo(int enable) {
     struct termios tty;
     tcgetattr(STDIN_FILENO, &tty);
@@ -429,11 +434,6 @@ int main(int argc, char **argv) {
     if(ret < 0) {
         goto err_unprepare_tcp;
     }
-
-    /**
-     * Disable stdin echo
-     * echo shall be disabled, to support such a text-menu
-     */
     stdin_echo(0);
 
     for(;;) {
