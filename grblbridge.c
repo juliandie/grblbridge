@@ -52,8 +52,9 @@ struct grbl_bridge {
     char *port;
     int srv; /**< server sock descriptor */
     int cli; /**< remote sock descriptor */
-    int mon; /**< monitoring sock descriptor */
 
+    /** monitor */
+    int mon; /**< monitoring sock descriptor */
 };
 
 /**
@@ -103,10 +104,6 @@ static void *grbl_r2l_handle(void *arg) {
     }
     printf("Listening to... 0.0.0.0:%s\n", grbl->port);
     for(;;) {
-        /**
-         * in case someone called pthread_cancel() for this thread
-         * pthread_testcancel() won't return.
-         */
         pthread_testcancel();
 
         ret = grbl_pollin(grbl->srv, 1000);
@@ -128,10 +125,6 @@ static void *grbl_r2l_handle(void *arg) {
         }
 
         for(;;) {
-            /**
-             * in case someone called pthread_cancel() for this thread
-             * pthread_testcancel() won't return.
-             */
             pthread_testcancel();
 
             ret = grbl_pollin(grbl->cli, 1);
@@ -150,7 +143,7 @@ static void *grbl_r2l_handle(void *arg) {
 
             if(grbl->verbose) {
                 pthread_mutex_lock(&grbl->lock);
-                printf("[R2L(%d)] %s", ret, buf);
+                printf("[R2L(%dB)] %s", ret, buf);
                 pthread_mutex_unlock(&grbl->lock);
             }
 
@@ -231,10 +224,6 @@ static void *grbl_l2r_handle(void *arg) {
     pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 
     for(;;) {
-        /**
-         * in case someone called pthread_cancel() for this thread
-         * pthread_testcancel() won't return.
-         */
         pthread_testcancel();
 
         /**
@@ -252,10 +241,6 @@ static void *grbl_l2r_handle(void *arg) {
         }
 
         for(;;) {
-            /**
-             * in case someone called pthread_cancel() for this thread
-             * pthread_testcancel() won't return.
-             */
             pthread_testcancel();
 
             ret = grbl_pollin(grbl->ttyfd, 1);
