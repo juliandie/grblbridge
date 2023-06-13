@@ -1,57 +1,45 @@
+obj-elf := grblbridge
 
-ifeq ($(BUILD_SRC),)
-	SRC_DIR := .
-else
-	ifeq ($(BUILD_SRC)/,$(dir $(CURDIR)))
-		SRC_DIR := ..
-	else
-		SRC_DIR := $(BUILD_SRC)
-	endif
-endif
-
-### CFLAGS
-CFLAGS := -Wextra -Wall -O2 -g
-CFLAGS += $(call cc-option,-fno-PIE)
-### Extend CFLAGS
-INCLUDES := ./
+### Simplified CFLAGS
+# Includes will be prefixed with -I automatically
+INCLUDES ?=
+# Defines will be prefixed with -D automatically
 DEFINES ?=
-CFLAGS += $(INCLUDES:%=-I$(SRC_DIR)/%)
-CFLAGS += $(DEFINES:%=-D%)
 
-### Extend LDFLAGS
-LIBPATHS :=
-LIBRARIES := 
+### Simplified LDFLAGS
+# Libpaths will be prefixed with -L automatically
+LIBPATHS ?=
+# Libpaths will be prefixed with -l automatically
+# Add libraries like pthread to LLINK directly
+LIBRARIES ?=
 
-LDFLAGS += $(LIBPATHS:%=-L%)
-LDFLAGS += $(DEFINES:%=-D%)
-LDFLAGS += -Wl,--start-group $(LIBRARIES:%=-l%) -Wl,--end-group
+### Linked libraries
 LLINK := -pthread $(LIBRARIES:%=-l%)
 
-C_SRC := $(wildcard $(SRC_DIR)/*.c)
-C_OBJ := $(C_SRC:%.c=%.c.o)
+### CFLAGS
+CFLAGS := -Wextra -Wall -Og -g
+CFLAGS += $(addprefix  -I, $(INCLUDES))
+CFLAGS += $(addprefix  -L, $(LIBPATHS))
+CFLAGS += $(addprefix  -D, $(DEFINES))
 
-PHONY += all
-all: grblbridge
+### LDFLAGS
+LDFLAGS ?= -Wl,--start-group $(addprefix  -l, $(DEFINES)) -Wl,--end-group
 
-grblbridge: $(C_OBJ)
+obj-c := $(wildcard *.c */*.c)
+### Include subdirs
+# -include src/subdir.mk
+
+obj-o := $(obj-c:%.c=%.o)
+
+all: $(obj-elf)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(obj-elf): $(obj-o)
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LLINK) -o $@
-	
-%.c.o: %.c %.h
-	$(CC) $(CFLAGS) -c $< -o $@
-	
-%.c.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
 
-PHONY += clean
 clean:
-	$(RM) -Rf grblbridge $(C_OBJ)
+	$(RM) -Rf $(obj-elf) $(obj-o)
 
-PHONY += mrproper
-mrproper: clean
-
-PHONY += re
-re: clean all
-
-.PHONY: $(PHONY)
-
-# vim: noet ts=8 sw=8
+.PHONY: all clean
