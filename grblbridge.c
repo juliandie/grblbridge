@@ -44,18 +44,21 @@ struct grbl_bridge {
     pthread_mutex_t lock;
     pthread_t l2r; /**< laser to remote */
     pthread_t r2l; /**< remote to laser */
+    pthread_t a2m; /**< any to monitor */
 
     /** serial */
     volatile int ttyfd;
     char *ttyif;
 
     /** network */
-    char *port;
-    int srv; /**< server sock descriptor */
-    volatile int cli; /**< remote sock descriptor */
+    char *grbl_port;
+    int grbl_srv; /**< server sock descriptor */
+    volatile int grbl_cli; /**< remote sock descriptor */
 
     /** monitor */
-    int mon; /**< monitoring sock descriptor */
+    char *mon_port;
+    int mon_srv;
+    volatile int mon_cli;
 };
 
 /**
@@ -84,6 +87,100 @@ static int grbl_pollin(int sd, int timeout) {
     return poll(&fds, 1, timeout);
 }
 
+static void grbl_monitor(struct grbl_bridge *grbl,
+                         const char *buf, size_t count) {
+    if(grbl->mon_cli != -1) {
+        if(send(grbl->mon_cli, buf, count, 0) < 0) {
+            fprintf(stderr, "write: %s\n", strerror(errno));
+        }
+    }
+    return;
+}
+
+/** read and discard any incoming messages */
+static void grbl_a2m_read(struct grbl_bridge *grbl) {
+    char buf[MTU_SIZE];
+    int ret;
+
+    for(;;) {
+        pthread_testcancel();
+
+        ret = grbl_pollin(grbl->mon_cli, 100);
+        if(ret < 0) // err (maybe closed/detached)
+            return;
+
+        if(ret == 0) // timeout, no data
+            continue;
+
+        ret = read(grbl->mon_cli, buf, sizeof(buf));
+        if(ret < 0) // err
+            return;
+
+        if(ret == 0) // closed by remote
+            return;
+
+        printf("Message discarded (%d): %s\n", ret, buf);
+    }
+    return;
+}
+
+static void *grbl_a2m_handle(void *arg) {
+    struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
+    struct sockaddr_in peer;
+    socklen_t addrlen;
+    int ret;
+
+    if(grbl == NULL) {
+        pthread_exit(NULL);
+    }
+
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+    ret = listen(grbl->mon_srv, 1); // accept only 1 conection at once
+    if(ret < 0) {
+        fprintf(stderr, "listen: %s\n", strerror(errno));
+        pthread_exit(NULL);
+    }
+
+    printf("Monitoring... 0.0.0.0:%s\n", grbl->mon_port);
+    for(;;) {
+        pthread_testcancel();
+
+        ret = grbl_pollin(grbl->mon_srv, 1000);
+        if(ret < 0) {
+            fprintf(stderr, "poll: %s\n", strerror(errno));
+            pthread_exit(NULL);
+        }
+
+        if(ret == 0)
+            continue;
+
+        pthread_mutex_lock(&grbl->lock);
+        addrlen = sizeof(struct sockaddr);
+        grbl->mon_cli = accept(grbl->mon_srv,
+                               (struct sockaddr *)&peer, &addrlen);
+        pthread_mutex_unlock(&grbl->lock);
+
+        if(grbl->mon_cli < 0) {
+            fprintf(stderr, "accept: %s\n", strerror(errno));
+            pthread_exit(NULL);
+        }
+
+        printf("Monitor connected: %s:%d\n",
+               inet_ntoa(peer.sin_addr), htons(peer.sin_port));
+        grbl_a2m_read(grbl);
+
+        pthread_mutex_lock(&grbl->lock);
+        close(grbl->mon_cli);
+        grbl->mon_cli = -1;
+        pthread_mutex_unlock(&grbl->lock);
+    }
+
+    fprintf(stderr, "finish r2l\n");
+    pthread_exit(NULL);
+}
+
 static void grbl_r2l_forward(struct grbl_bridge *grbl) {
     char buf[MTU_SIZE];
     int ret;
@@ -91,14 +188,14 @@ static void grbl_r2l_forward(struct grbl_bridge *grbl) {
     for(;;) {
         pthread_testcancel();
 
-        ret = grbl_pollin(grbl->cli, 100);
+        ret = grbl_pollin(grbl->grbl_cli, 100);
         if(ret < 0) // err (maybe closed/detached)
             return;
 
         if(ret == 0) // timeout, no data
             continue;
 
-        ret = read(grbl->cli, buf, sizeof(buf));
+        ret = read(grbl->grbl_cli, buf, sizeof(buf));
         if(ret < 0) // err
             return;
 
@@ -117,8 +214,9 @@ static void grbl_r2l_forward(struct grbl_bridge *grbl) {
         pthread_mutex_lock(&grbl->lock);
         ret = write(grbl->ttyfd, buf, ret);
         if(ret < 0) {
-            fprintf(stderr, "write (tty): %s\n", strerror(errno));
+            //fprintf(stderr, "write (tty): %s\n", strerror(errno));
         }
+        grbl_monitor(grbl, buf, ret);
         pthread_mutex_unlock(&grbl->lock);
     }
     return;
@@ -137,17 +235,17 @@ static void *grbl_r2l_handle(void *arg) {
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 
-    ret = listen(grbl->srv, 1); // accept only 1 conection at once
+    ret = listen(grbl->grbl_srv, 1); // accept only 1 conection at once
     if(ret < 0) {
         fprintf(stderr, "listen: %s\n", strerror(errno));
         pthread_exit(NULL);
     }
 
-    printf("Listening to... 0.0.0.0:%s\n", grbl->port);
+    printf("Listening... 0.0.0.0:%s\n", grbl->grbl_port);
     for(;;) {
         pthread_testcancel();
 
-        ret = grbl_pollin(grbl->srv, 1000);
+        ret = grbl_pollin(grbl->grbl_srv, 1000);
         if(ret < 0) {
             fprintf(stderr, "poll: %s\n", strerror(errno));
             pthread_exit(NULL);
@@ -158,10 +256,11 @@ static void *grbl_r2l_handle(void *arg) {
 
         pthread_mutex_lock(&grbl->lock);
         addrlen = sizeof(struct sockaddr);
-        grbl->cli = accept(grbl->srv, (struct sockaddr *)&peer, &addrlen);
+        grbl->grbl_cli = accept(grbl->grbl_srv,
+                                (struct sockaddr *)&peer, &addrlen);
         pthread_mutex_unlock(&grbl->lock);
 
-        if(grbl->cli < 0) {
+        if(grbl->grbl_cli < 0) {
             fprintf(stderr, "accept: %s\n", strerror(errno));
             pthread_exit(NULL);
         }
@@ -169,8 +268,8 @@ static void *grbl_r2l_handle(void *arg) {
         grbl_r2l_forward(grbl);
 
         pthread_mutex_lock(&grbl->lock);
-        close(grbl->cli);
-        grbl->cli = -1;
+        close(grbl->grbl_cli);
+        grbl->grbl_cli = -1;
         pthread_mutex_unlock(&grbl->lock);
     }
 
@@ -254,10 +353,11 @@ static void grbl_l2r_foward(struct grbl_bridge *grbl) {
             continue;
 
         pthread_mutex_lock(&grbl->lock);
-        ret = write(grbl->cli, buf, ret);
+        ret = write(grbl->grbl_cli, buf, ret);
         if(ret < 0) {
             fprintf(stderr, "write (tcp): %s", strerror(errno));
         }
+        grbl_monitor(grbl, buf, ret);
         pthread_mutex_unlock(&grbl->lock);
     }
     return;
@@ -324,7 +424,7 @@ static int grbl_inject(struct grbl_bridge *grbl) {
         stdin_echo(0);
         if(c == 'r') {
             pthread_mutex_lock(&grbl->lock);
-            ret = write(grbl->cli, buf, strlen(buf));
+            ret = write(grbl->grbl_cli, buf, strlen(buf));
             if(ret < 0)
                 fprintf(stderr, "write (tcp): %s", strerror(errno));
             pthread_mutex_unlock(&grbl->lock);
@@ -352,7 +452,7 @@ static void print_help(const char *name) {
     return;
 }
 
-static int grbl_prepare_tcp(struct grbl_bridge *grbl) {
+static int grbl_prepare_tcp(const char *port) {
     struct addrinfo hints = {
         .ai_family = AF_INET,
         .ai_socktype = SOCK_STREAM,
@@ -362,8 +462,7 @@ static int grbl_prepare_tcp(struct grbl_bridge *grbl) {
     struct addrinfo *res, *rp;
     int ret = 0, fd = 0;
 
-    ret = getaddrinfo(NULL, (!grbl->port) ? GRBL_PORT : grbl->port,
-                      &hints, &res);
+    ret = getaddrinfo(NULL, port, &hints, &res);
     if(ret != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
         return -1;
@@ -382,9 +481,8 @@ static int grbl_prepare_tcp(struct grbl_bridge *grbl) {
     }
 
     freeaddrinfo(res);
-    grbl->srv = fd;
 
-    return 0;
+    return fd;
 }
 
 static int grbl_prepare_thread(struct grbl_bridge *grbl) {
@@ -393,12 +491,22 @@ static int grbl_prepare_thread(struct grbl_bridge *grbl) {
         return -1;
     }
 
-    if(pthread_create(&grbl->r2l, NULL, &grbl_r2l_handle, (void *)grbl) < 0) {
+    if(grbl->mon_port) {
+        if(pthread_create(&grbl->a2m, NULL,
+           &grbl_a2m_handle, (void *)grbl) < 0) {
+            fprintf(stderr, "failed to create thread a2m\n");
+            return -1;
+        }
+    }
+
+    if(pthread_create(&grbl->r2l, NULL,
+       &grbl_r2l_handle, (void *)grbl) < 0) {
         fprintf(stderr, "failed to create thread r2l\n");
         return -1;
     }
 
-    if(pthread_create(&grbl->l2r, NULL, &grbl_l2r_handle, (void *)grbl) < 0) {
+    if(pthread_create(&grbl->l2r, NULL,
+       &grbl_l2r_handle, (void *)grbl) < 0) {
         fprintf(stderr, "failed to create thread l2r\n");
         return -1;
     }
@@ -411,18 +519,21 @@ int main(int argc, char **argv) {
     int ret = 0;
 
     memset(&grbl, 0, sizeof(struct grbl_bridge));
+    grbl.grbl_port = GRBL_PORT;
     grbl.ttyfd = -1;
-    grbl.cli = -1;
+    grbl.grbl_cli = -1;
+    grbl.mon_cli = -1;
 
     for(;;) {
-        int c = getopt(argc, argv, "hvp:");
+        int c = getopt(argc, argv, "hvp:m:");
 
         if(c == -1)
             break;
 
         switch(c) {
         case 'v': grbl.verbose = 1; break;
-        case 'p': grbl.port = optarg; break;
+        case 'p': grbl.grbl_port = optarg; break;
+        case 'm': grbl.mon_port = optarg; break;
         case 'h':  print_help(argv[0]); return -1;
         default: break;
         }
@@ -439,14 +550,21 @@ int main(int argc, char **argv) {
      * The tty is opened and maintained in the l2r thread.
      */
 
-    ret = grbl_prepare_tcp(&grbl);
+    grbl.grbl_srv = grbl_prepare_tcp(grbl.grbl_port);
     if(ret < 0) {
         goto err_free;
     }
 
+    if(grbl.mon_port) {
+        grbl.mon_srv = grbl_prepare_tcp(grbl.mon_port);
+        if(ret < 0) {
+            goto err_unprepare_grbl;
+        }
+    }
+
     ret = grbl_prepare_thread(&grbl);
     if(ret < 0) {
-        goto err_unprepare_tcp;
+        goto err_unprepare_mon;
     }
     stdin_echo(0);
 
@@ -477,15 +595,21 @@ done:
     pthread_join(grbl.l2r, NULL);
     pthread_cancel(grbl.r2l);
     pthread_join(grbl.r2l, NULL);
+    pthread_cancel(grbl.a2m);
+    pthread_join(grbl.a2m, NULL);
     pthread_mutex_destroy(&grbl.lock);
     if(grbl.ttyfd != -1) {
         close(grbl.ttyfd);
     }
-err_unprepare_tcp:
-    close(grbl.srv);
-    if(grbl.cli != -1) {
-        close(grbl.cli);
+err_unprepare_mon:
+    if(grbl.mon_cli != -1) {
+        close(grbl.mon_cli);
     }
+err_unprepare_grbl:
+    if(grbl.grbl_cli != -1) {
+        close(grbl.grbl_cli);
+    }
+    close(grbl.grbl_srv);
 err_free:
     free(grbl.ttyif);
     return ret;
