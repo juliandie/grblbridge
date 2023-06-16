@@ -13,5 +13,5 @@ make
 ```
 ./grblbridge [-hv] [-p port] <serial-port>
 ```
--p port is optional and changes the TCP port the bridge is listening to, default is 23 which requires root-privileges.
+The argument -p port is optional and changes the TCP port the bridge is listening to, default is 23 (telnet) which requires root-privileges.
 serial-port is the device-node of your laser (e.g. /dev/ttyUSB0)
