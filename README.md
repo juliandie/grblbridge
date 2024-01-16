@@ -1,14 +1,21 @@
 # GRBL headless bridge
 
-Important notification about security
+## Important notification about security
 
-There's no drop in privileges. If you use this as root, there might be a major risk for your system if there's unknown attendies in your network.
-I just run this bridge as is. I didn't verify nor check for any security related issues.
+When the application was started with root-privileges, those are dropped as related ports are set up.
+Anyways, there're no credentials in regards of GRBL therefore be careful who can access those network ports I guess.
 
-Use this software on your RapberryPi or Notebook, which is conencted to your device and your network via LAN or WIFI
-Personally I use Lightburn to connect to the brdige via GRBL (LAN) to my laser.
+
+## My intention
+
+I use this software on a Notebook, which is connencted to a small laser engraver.
+So I can forward for example Lightburns GRBL to my laser engraver via WLAN.
+It should also word on RasPi or any other Linux based system since it should be fully POSIX compatible.
 
 Basically this is just a bridge from a TCP-Socket to UART.
+
+Besides to a TCP-UART bridge I just wanted to code something using a serial and network-socket.
+
 
 # Build
 ```bash
@@ -17,12 +24,12 @@ make
 
 # Usage
 ```bash
-./grblbridge [-hv] [-p port] [-m port] <serial-port>
+./grblbridge [-hv] [-p GRBL-port] [-m Monitor-port] -d <serial-port>
 ```
 
 ## Required arguments
 
-serial-port The device-node of your device (e.g. /dev/ttyUSB0).
+-d <serial-port> The device-node of your device (e.g. /dev/ttyUSB0).
 The application tries to connect to the serial-port (device) dynamically.
 This means, if the device isn't turned on, therefore the device-node isn't available yet, the application won't complain.
 As the serial-port appeared the application will open and configure it during runtime.
@@ -44,6 +51,8 @@ Set a monitoring port to see in a separate terminal (e.g. netcat) what messages 
 # Monitor
 
 Connect to monitoring interface
+
 ```bash
 nc <grblbridge-ipv4> <monitoring-port>
 ```
+

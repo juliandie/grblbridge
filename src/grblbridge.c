@@ -233,6 +233,16 @@ int main(int argc, char **argv) {
     }
 
     /** TODO drop root-priviledges if required */
+    if(getuid() == 0) {
+        if(setgid(1000) < 0) {
+            printf("failed to setgid: %s\n", strerror(errno));
+            goto err_unprepare_mon;
+        }
+        if(setuid(1000) < 0) {
+            printf("failed to setuid: %s\n", strerror(errno));
+            goto err_unprepare_mon;
+        }
+    }
 
     ret = grbl_prepare_thread(&grbl);
     if(ret < 0) {
