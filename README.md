@@ -1,6 +1,7 @@
 # GRBL headless bridge
 
 Important notification about security
+
 There's no drop in privileges. If you use this as root, there might be a major risk for your system if there's unknown attendies in your network.
 I just run this bridge as is. I didn't verify nor check for any security related issues.
 
