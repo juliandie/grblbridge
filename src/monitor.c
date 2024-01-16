@@ -8,14 +8,6 @@
 
 #include <grblbridge.h>
 
-void grbl_mon_put(struct grbl_bridge *grbl, const char *buf, size_t count) {
-    if(grbl->mon_sd_peer != -1) {
-        if(send(grbl->mon_sd_peer, buf, count, 0) < 0) {
-            fprintf(stderr, "failed to write (mon): %s\n", strerror(errno));
-        }
-    }
-}
-
 /** read and discard any incoming messages */
 static void grbl_mon_read(struct grbl_bridge *grbl) {
     char buf[GRBL_MTU_SIZE];
@@ -38,12 +30,14 @@ static void grbl_mon_read(struct grbl_bridge *grbl) {
         if(ret == 0) // closed by remote
             return;
 
-        //printf("Message discarded (%d): %s\n", ret, buf);
+        if(grbl->verbose) {
+            printf("Message discarded (%d): %s\n", ret, buf);
+        }
     }
     return;
 }
 
-void *grbl_mon_handle(void *arg) {
+void *grbl_mon_thread(void *arg) {
     struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
     struct sockaddr_in lo, peer;
     socklen_t addrlen;
@@ -73,7 +67,7 @@ void *grbl_mon_handle(void *arg) {
         pthread_exit(NULL);
     }
 
-    printf("Monitoring... 0.0.0.0:%u\n", ntohs(lo.sin_port));
+    printf("Monitor... 0.0.0.0:%d\n", ntohs(lo.sin_port));
     for(;;) {
         pthread_testcancel();
 
@@ -89,7 +83,7 @@ void *grbl_mon_handle(void *arg) {
         pthread_mutex_lock(&grbl->lock);
         addrlen = sizeof(struct sockaddr);
         grbl->mon_sd_peer = accept(grbl->mon_sd,
-                               (struct sockaddr *)&peer, &addrlen);
+                                   (struct sockaddr *)&peer, &addrlen);
         pthread_mutex_unlock(&grbl->lock);
 
         if(grbl->mon_sd_peer < 0) {
@@ -97,8 +91,10 @@ void *grbl_mon_handle(void *arg) {
             pthread_exit(NULL);
         }
 
-        printf("Monitor connected: %s:%d\n",
-               inet_ntoa(peer.sin_addr), htons(peer.sin_port));
+        if(grbl->verbose) {
+            printf("Monitor connected: %s:%d\n",
+                   inet_ntoa(peer.sin_addr), htons(peer.sin_port));
+        }
         grbl_mon_read(grbl);
 
         pthread_mutex_lock(&grbl->lock);
@@ -107,6 +103,5 @@ void *grbl_mon_handle(void *arg) {
         pthread_mutex_unlock(&grbl->lock);
     }
 
-    fprintf(stderr, "finish r2l\n");
     pthread_exit(NULL);
 }

@@ -8,7 +8,7 @@
 
 #include <grblbridge.h>
 
-static void grbl_rem2dev_forward(struct grbl_bridge *grbl) {
+static void grbl_tcp_forward(struct grbl_bridge *grbl) {
     char buf[GRBL_MTU_SIZE];
     int ret;
 
@@ -35,21 +35,20 @@ static void grbl_rem2dev_forward(struct grbl_bridge *grbl) {
             pthread_mutex_unlock(&grbl->lock);
         }
 
-        if(grbl->ttyfd == -1)
-            continue; // discard message
-
-        pthread_mutex_lock(&grbl->lock);
-        ret = write(grbl->ttyfd, buf, ret);
+        ret = grbl_write(grbl->ttyfd, &grbl->lock, buf, (size_t)ret);
         if(ret < 0) {
-            fprintf(stderr, "failed to write (r2d): %s", strerror(errno));
+            fprintf(stderr, "failed to write (d2r): %s", strerror(errno));
         }
-        grbl_mon_put(grbl, buf, ret);
-        pthread_mutex_unlock(&grbl->lock);
+
+        ret = grbl_write(grbl->mon_sd_peer, &grbl->lock, buf, (size_t)ret);
+        if(ret < 0) {
+            fprintf(stderr, "failed to write (mon): %s", strerror(errno));
+        }
     }
     return;
 }
 
-void *grbl_rem2dev_handle(void *arg) {
+void *grbl_tcp_thread(void *arg) {
     struct grbl_bridge *grbl = (struct grbl_bridge *)arg;
     struct sockaddr_in lo, peer;
     socklen_t addrlen;
@@ -75,7 +74,7 @@ void *grbl_rem2dev_handle(void *arg) {
         pthread_exit(NULL);
     }
 
-    printf("Listening... 0.0.0.0:%u\n", ntohs(lo.sin_port));
+    printf("GRBL... 0.0.0.0:%d\n", ntohs(lo.sin_port));
     for(;;) {
         pthread_testcancel();
 
@@ -91,7 +90,8 @@ void *grbl_rem2dev_handle(void *arg) {
         pthread_mutex_lock(&grbl->lock);
         addrlen = sizeof(struct sockaddr);
         grbl->grbl_sd_peer = accept(grbl->grbl_sd,
-                                (struct sockaddr *)&peer, &addrlen);
+                                    (struct sockaddr *)&peer,
+                                    &addrlen);
         pthread_mutex_unlock(&grbl->lock);
 
         if(grbl->grbl_sd_peer < 0) {
@@ -99,7 +99,7 @@ void *grbl_rem2dev_handle(void *arg) {
             pthread_exit(NULL);
         }
 
-        grbl_rem2dev_forward(grbl);
+        grbl_tcp_forward(grbl);
 
         pthread_mutex_lock(&grbl->lock);
         close(grbl->grbl_sd_peer);
@@ -107,6 +107,5 @@ void *grbl_rem2dev_handle(void *arg) {
         pthread_mutex_unlock(&grbl->lock);
     }
 
-    fprintf(stderr, "finish r2l\n");
     pthread_exit(NULL);
 }

@@ -48,36 +48,56 @@ static int grbl_inject(struct grbl_bridge *grbl) {
     int ret = 0;
 
     memset(buf, 0, sizeof(buf));
-    printf("Inject to [r]emote, [l]aser or got [b]ack\n");
+    printf("Inject to [r]emote, [d]evice or got [b]ack\n");
     c = (char)getchar();
 
     switch(c) {
     case 'r':
-    case 'l':
-        printf("Enter your code and confirm with [enter]: ");
+        printf("Enter your message for remote and confirm with [enter]:\n");
         stdin_echo(1);
         if(fgets(buf, sizeof(buf), stdin) == NULL) {
             return -1;
         }
         stdin_echo(0);
-        if(c == 'r') {
-            pthread_mutex_lock(&grbl->lock);
-            ret = write(grbl->grbl_sd_peer, buf, strlen(buf));
-            if(ret < 0)
-                fprintf(stderr, "write (tcp): %s", strerror(errno));
-            pthread_mutex_unlock(&grbl->lock);
+
+        ret = grbl_write(grbl->grbl_sd_peer, &grbl->lock, buf, strlen(buf));
+        if(ret < 0) {
+            fprintf(stderr, "failed to write (d2r): %s", strerror(errno));
+            return -1;
         }
-        else {
-            pthread_mutex_lock(&grbl->lock);
-            /** write to ttyfd might fail, since there might be no laser */
-            ret = write(grbl->ttyfd, buf, strlen(buf));
-            if(ret < 0)
-                fprintf(stderr, "write (tty): %s", strerror(errno));
-            pthread_mutex_unlock(&grbl->lock);
+
+        ret = grbl_write(grbl->mon_sd_peer, &grbl->lock, buf, strlen(buf));
+        if(ret < 0) {
+            fprintf(stderr, "failed to write (mon): %s", strerror(errno));
+            return -1;
         }
         break;
-    case 'b': printf("falling back to main menu\n"); break;
-    default: printf("unknown key, falling back to main menu\n"); break;
+    case 'd':
+        printf("Enter your message for device and confirm with [enter]:\n");
+        stdin_echo(1);
+        if(fgets(buf, sizeof(buf), stdin) == NULL) {
+            return -1;
+        }
+        stdin_echo(0);
+
+        ret = grbl_write(grbl->ttyfd, &grbl->lock, buf, strlen(buf));
+        if(ret < 0) {
+            fprintf(stderr, "failed to write (d2r): %s", strerror(errno));
+            return -1;
+        }
+
+        ret = grbl_write(grbl->mon_sd_peer, &grbl->lock, buf, strlen(buf));
+        if(ret < 0) {
+            fprintf(stderr, "failed to write (mon): %s", strerror(errno));
+            return -1;
+        }
+        break;
+    case 'b':
+        printf("falling back to main menu\n");
+        break;
+    default:
+        printf("unknown key, falling back to main menu\n");
+        break;
     }
 
     return ret;
@@ -126,20 +146,20 @@ static int grbl_prepare_thread(struct grbl_bridge *grbl) {
         return -1;
     }
 
-    if(pthread_create(&grbl->remote2dev, NULL,
-       &grbl_rem2dev_handle, (void *)grbl) < 0) {
-        fprintf(stderr, "failed to create remote2dev thread\n");
+    if(pthread_create(&grbl->serial, NULL,
+       &grbl_serial_thread, (void *)grbl) < 0) {
+        fprintf(stderr, "failed to create serial thread\n");
         return -1;
     }
 
-    if(pthread_create(&grbl->dev2remote, NULL,
-       &grbl_dev2rem_handle, (void *)grbl) < 0) {
-        fprintf(stderr, "failed to create dev2remote thread\n");
+    if(pthread_create(&grbl->tcp, NULL,
+       &grbl_tcp_thread, (void *)grbl) < 0) {
+        fprintf(stderr, "failed to create tcp thread\n");
         return -1;
     }
 
     if(pthread_create(&grbl->monitor, NULL,
-       &grbl_mon_handle, (void *)grbl) < 0) {
+       &grbl_mon_thread, (void *)grbl) < 0) {
         fprintf(stderr, "failed to create monitor thread\n");
         return -1;
     }
@@ -148,7 +168,7 @@ static int grbl_prepare_thread(struct grbl_bridge *grbl) {
 }
 
 static void print_help(const char *name) {
-    printf("usage: %s [-hv] [-p port] <serial-port>\n"
+    printf("usage: %s [-hv] [-p port] -d <serial-port>\n"
            "default port: telnet (23)\n",
            name);
     return;
@@ -169,7 +189,7 @@ int main(int argc, char **argv) {
 
     grbl_init(&grbl);
     for(;;) {
-        int c = getopt(argc, argv, "hvp:m:");
+        int c = getopt(argc, argv, "hvp:m:d:");
 
         if(c == -1)
             break;
@@ -224,6 +244,12 @@ int main(int argc, char **argv) {
         int c = getchar();
 
         switch(c) {
+        case 'h':
+            printf("v    Change verbosity\n"
+                   "i    Inject command\n"
+                   "q    Quit\n"
+                   "x    Exit\n");
+            break;
         case 'i':
             grbl_inject(&grbl);
             break;
@@ -231,8 +257,12 @@ int main(int argc, char **argv) {
             grbl.verbose = 1 - grbl.verbose;
             printf("verbose %s\n", (grbl.verbose) ? "enabled" : "disabled");
             break;
+        case 'q':
+            goto done;
+            break;
         case 'x':
             goto done;
+            break;
         }
 
         usleep(1000);
@@ -243,10 +273,10 @@ done:
     /** Enable stdin buffer and echo */
     stdin_echo(1);
 
-    pthread_cancel(grbl.dev2remote);
-    pthread_join(grbl.dev2remote, NULL);
-    pthread_cancel(grbl.remote2dev);
-    pthread_join(grbl.remote2dev, NULL);
+    pthread_cancel(grbl.serial);
+    pthread_join(grbl.serial, NULL);
+    pthread_cancel(grbl.tcp);
+    pthread_join(grbl.tcp, NULL);
     pthread_cancel(grbl.monitor);
     pthread_join(grbl.monitor, NULL);
     pthread_mutex_destroy(&grbl.lock);

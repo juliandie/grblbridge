@@ -12,8 +12,8 @@ struct grbl_bridge {
 
     /** thread */
     pthread_mutex_t lock;
-    pthread_t dev2remote;
-    pthread_t remote2dev;
+    pthread_t serial;
+    pthread_t tcp;
     pthread_t monitor;
 
     /** serial */
@@ -33,15 +33,15 @@ struct grbl_bridge {
 
 /** generic.c */
 int grbl_pollin(int sd, int timeout);
+int grbl_write(int sd, pthread_mutex_t *lock, const char *buf, size_t count);
 
-/** dev2remote.c */
-void *grbl_dev2rem_handle(void *arg);
+/** serial.c */
+void *grbl_serial_thread(void *arg);
 
-/** remote2dev.c */
-void *grbl_rem2dev_handle(void *arg);
+/** tcp.c */
+void *grbl_tcp_thread(void *arg);
 
 /** monitor.c */
-void grbl_mon_put(struct grbl_bridge *grbl, const char *buf, size_t count);
-void *grbl_mon_handle(void *arg);
+void *grbl_mon_thread(void *arg);
 
 #endif /* GRBLBRIDGE_H_ */
