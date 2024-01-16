@@ -47,7 +47,6 @@ As the serial-port appeared the application will open and configure it during ru
 
 
 -p GRBL port. Default port is 23 (telnet). Since port 23 is < 1024 root-privileges are required.
-Keep in mind, the application does not drop privilidges (yet) as the port was opened.
 
 
 -m Monitoring port. This port is disabled, when no port is given.
