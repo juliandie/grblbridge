@@ -10,28 +10,30 @@ DEFINES ?=
 
 ### Simplified LDFLAGS
 # Libpaths will be prefixed with -L automatically
-LIBPATHS ?=
+LIBPATHS ?= 
 # Libpaths will be prefixed with -l automatically
 # Add libraries like pthread to LLINK directly
-LIBRARIES ?=
+LIBRARIES ?= 
 
 ### Linked libraries
 LLINK := -pthread $(LIBRARIES:%=-l%)
 
 ### CFLAGS
 CFLAGS := -Wextra -Wall -Og -g
-CFLAGS += $(addprefix  -I, $(INCLUDES))
-CFLAGS += $(addprefix  -L, $(LIBPATHS))
-CFLAGS += $(addprefix  -D, $(DEFINES))
+CFLAGS += $(INCLUDES:%=-I%) $(LIBPATHS:%=-L%) $(DEFINES:%=-D%)
 
 ### LDFLAGS
-LDFLAGS ?= -Wl,--start-group $(addprefix  -l, $(DEFINES)) -Wl,--end-group
+LDFLAGS ?= -Wl,--start-group $(DEFINES:%=-l%) -Wl,--end-group
 
 obj-c := $(wildcard *.c */*.c)
+obj-cpp := $(wildcard *.cpp */*.cpp)
+obj-asm := $(wildcard *.s */*.s)
 ### Include subdirs
 # -include src/subdir.mk
 
 obj-o := $(obj-c:%.c=%.o)
+obj-o += $(obj-cpp:%.cpp=%.o)
+obj-o += $(obj-asm:%.s=%.o)
 
 all: $(obj-elf)
 
@@ -40,6 +42,9 @@ all: $(obj-elf)
 
 $(obj-elf): $(obj-o)
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LLINK) -o $@
+
+ohmylib: 
+	$(MAKE) -C ../../ libohmylib.a
 
 clean:
 	$(RM) -Rf $(obj-elf) $(obj-o)
