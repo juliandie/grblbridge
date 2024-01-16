@@ -10,11 +10,11 @@ Anyways, there're no credentials in regards of GRBL therefore be careful who can
 
 I use this software on a Notebook, which is connencted to a small laser engraver.
 So I can forward for example Lightburns GRBL to my laser engraver via WLAN.
-It should also word on RasPi or any other Linux based system since it should be fully POSIX compatible.
+It should also work on RasPi or any other Linux based system since it should be fully POSIX compatible.
 
 Basically this is just a bridge from a TCP-Socket to UART.
 
-Besides to a TCP-UART bridge I just wanted to code something using a serial and network-socket.
+Besides a TCP-UART bridge I just wanted to code something using a serial-port and network-socket.
 
 
 # Build
@@ -26,6 +26,11 @@ make
 ```bash
 ./grblbridge [-hv] [-p GRBL-port] [-m Monitor-port] -d <serial-port>
 ```
+
+Once running, there's an interactive console.
+You can see its command by typing 'h', there you could also inject further command to any device.
+I have used that for debugging and some simple emulation.
+
 
 ## Required arguments
 
@@ -55,4 +60,3 @@ Connect to monitoring interface
 ```bash
 nc <grblbridge-ipv4> <monitoring-port>
 ```
-
