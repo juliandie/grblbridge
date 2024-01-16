@@ -1,8 +1,10 @@
+# Set parent folder name as target elf
+#obj-elf := $(shell basename $(shell pwd))
 obj-elf := grblbridge
 
 ### Simplified CFLAGS
 # Includes will be prefixed with -I automatically
-INCLUDES ?=
+INCLUDES ?= ./src
 # Defines will be prefixed with -D automatically
 DEFINES ?=
 
